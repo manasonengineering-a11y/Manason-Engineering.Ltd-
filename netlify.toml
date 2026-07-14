@@ -1,0 +1,17 @@
+[build]
+  command = "vite build"
+  publish = "dist"
+
+# Ihindure BACKEND_URL ukoresheje URL nyayo ya backend yawe kuri Render
+# (urugero: https://manason-backend.onrender.com)
+[[redirects]]
+  from = "/api/*"
+  to = "https://BACKEND_URL_YAWE.onrender.com/api/:splat"
+  status = 200
+  force = true
+
+# Single Page App: buri url itaramenyekana isubizwa kuri index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

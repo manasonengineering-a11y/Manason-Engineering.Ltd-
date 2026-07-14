@@ -1,0 +1,6 @@
+{
+  "name": "Manason Engineering",
+  "description": "Rwanda's complete construction marketplace connecting clients, professionals, companies, suppliers, technicians, helpers, and manufacturers with secure escrow payments, tracking, and messaging.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
