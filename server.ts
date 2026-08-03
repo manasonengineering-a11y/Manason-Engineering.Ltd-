@@ -83,6 +83,8 @@ interface DatabaseSchema {
   advertisements?: any[];
   auditLogs?: any[];
   jobPostings?: any[];
+  stagePostings?: any[];
+  stageApplications?: any[];
 }
 
 const DEFAULT_SETTINGS = {
@@ -222,7 +224,9 @@ function readDB(): DatabaseSchema {
         settings: DEFAULT_SETTINGS,
         advertisements: DEFAULT_ADVERTISEMENTS,
         auditLogs: DEFAULT_AUDIT_LOGS,
-        jobPostings: []
+        jobPostings: [],
+        stagePostings: [],
+        stageApplications: []
       };
       fs.writeFileSync(DB_PATH, JSON.stringify(initialDB, null, 2), 'utf-8');
       return initialDB;
@@ -271,6 +275,14 @@ function readDB(): DatabaseSchema {
       db.jobPostings = [];
       modified = true;
     }
+    if (!db.stagePostings) {
+      db.stagePostings = [];
+      modified = true;
+    }
+    if (!db.stageApplications) {
+      db.stageApplications = [];
+      modified = true;
+    }
     // Security migration: any Admin account that has no password set
     // (from the old insecure version) gets the default password so the
     // owner is not locked out. They should change it immediately from
@@ -292,7 +304,7 @@ function readDB(): DatabaseSchema {
       consultancies: [], dispatches: [], brochures: [], homepage: {}, 
       projects: [], clientRequests: [], settings: DEFAULT_SETTINGS, 
       advertisements: DEFAULT_ADVERTISEMENTS, auditLogs: DEFAULT_AUDIT_LOGS,
-      jobPostings: []
+      jobPostings: [], stagePostings: [], stageApplications: []
     };
   }
 }
@@ -404,6 +416,23 @@ async function saveToSupabase(request: any) {
   }
 }
 
+async function deleteFromSupabase(id: string) {
+  if (!supabase) return;
+  try {
+    const { error } = await supabase
+      .from('client_requests')
+      .delete()
+      .eq('id', id);
+    if (error) {
+      console.warn('Supabase DB delete warning (ignoring and proceeding with local DB):', error);
+    } else {
+      console.log('Successfully deleted from Supabase:', id);
+    }
+  } catch (err) {
+    console.warn('Failed to delete from Supabase (ignoring and proceeding with local DB):', err);
+  }
+}
+
 async function syncSupabaseRequests(db: DatabaseSchema) {
   if (!supabase) return;
   try {
@@ -447,7 +476,7 @@ if (aiApiKey) {
 }
 
 // Utility to create/save notifications/alerts
-function triggerServerDispatch(db: DatabaseSchema, type: 'WhatsApp' | 'SMS' | 'Email' | 'Platform', recipient: string, content: string) {
+function triggerServerDispatch(db: DatabaseSchema, type: 'WhatsApp' | 'SMS' | 'Email' | 'Platform', recipient: string, content: string, fallbackEmail?: string) {
   const newDispatch = {
     id: `disp-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
     type,
@@ -468,6 +497,11 @@ function triggerServerDispatch(db: DatabaseSchema, type: 'WhatsApp' | 'SMS' | 'E
   } else if (type === 'WhatsApp') {
     sendRealWhatsApp(recipient, content).catch(err =>
       console.warn('WhatsApp send failed:', err?.message || err)
+    );
+  } else if (type === 'SMS' && fallbackEmail && fallbackEmail.includes('@')) {
+    // No SMS gateway is configured — send the same notification by email instead.
+    sendRealEmail(fallbackEmail, 'MANASON ENGINEERING', content).catch(err =>
+      console.warn('Resend email (SMS fallback) send failed:', err?.message || err)
     );
   }
 
@@ -523,8 +557,15 @@ async function sendRealWhatsApp(toPhoneRaw: string, message: string) {
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   if (!token || !phoneNumberId) return; // Simulation mode — not verified with Meta yet.
 
-  // WhatsApp Cloud API requires E.164 format without the leading '+'.
-  const toPhone = toPhoneRaw.replace(/[^\d]/g, '');
+  // WhatsApp Cloud API requires full E.164 digits (with country code, no '+').
+  // Numbers stored locally are often just the national number (e.g. "0785647676"),
+  // so normalize Rwandan numbers by adding the 250 country code when missing.
+  let toPhone = toPhoneRaw.replace(/[^\d]/g, '');
+  if (toPhone.startsWith('0') && toPhone.length === 10) {
+    toPhone = '250' + toPhone.slice(1);
+  } else if (toPhone.length === 9) {
+    toPhone = '250' + toPhone;
+  }
   if (!toPhone) return;
 
   const res = await fetch(`https://graph.facebook.com/v20.0/${phoneNumberId}/messages`, {
@@ -545,6 +586,167 @@ async function sendRealWhatsApp(toPhoneRaw: string, message: string) {
     throw new Error(`WhatsApp Cloud API error (${res.status}): ${errText}`);
   }
 }
+
+// ==========================================
+// MTN MOMO COLLECTION API (REAL PAYMENTS)
+// ==========================================
+// Docs: https://momodeveloper.mtn.com
+// Sandbox and production use the same endpoints; only the base URL and
+// the subscription key's approved environment differ.
+const MOMO_SUBSCRIPTION_KEY = process.env.MOMO_SUBSCRIPTION_KEY;
+const MOMO_API_USER = process.env.MOMO_API_USER;
+const MOMO_API_KEY = process.env.MOMO_API_KEY;
+const MOMO_TARGET_ENVIRONMENT = process.env.MOMO_TARGET_ENVIRONMENT || 'sandbox';
+const MOMO_CALLBACK_HOST = process.env.MOMO_CALLBACK_HOST || 'https://manason-engineer.onrender.com';
+const MOMO_BASE_URL = MOMO_TARGET_ENVIRONMENT === 'sandbox'
+  ? 'https://sandbox.momodeveloper.mtn.com'
+  : 'https://momodeveloper.mtn.com';
+
+// One-time setup: creates a sandbox API user + API key. Only works against
+// the sandbox base URL. Run this ONCE, then copy the returned apiUser/apiKey
+// into MOMO_API_USER / MOMO_API_KEY on Render — after that this endpoint is
+// no longer needed for sandbox testing.
+app.get('/api/momo/setup-sandbox', async (req, res) => {
+  if (MOMO_API_USER && MOMO_API_KEY) {
+    return res.status(400).json({ error: 'Already configured — MOMO_API_USER and MOMO_API_KEY are already set on the server.' });
+  }
+  if (MOMO_TARGET_ENVIRONMENT !== 'sandbox') {
+    return res.status(400).json({ error: 'Setup only runs against sandbox. Set MOMO_TARGET_ENVIRONMENT=sandbox first.' });
+  }
+  if (!MOMO_SUBSCRIPTION_KEY) {
+    return res.status(400).json({ error: 'MOMO_SUBSCRIPTION_KEY is not set on the server.' });
+  }
+  try {
+    const referenceId = crypto.randomUUID();
+    const userRes = await fetch(`${MOMO_BASE_URL}/v1_0/apiuser`, {
+      method: 'POST',
+      headers: {
+        'X-Reference-Id': referenceId,
+        'Ocp-Apim-Subscription-Key': MOMO_SUBSCRIPTION_KEY,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ providerCallbackHost: MOMO_CALLBACK_HOST })
+    });
+    if (!userRes.ok) {
+      const t = await userRes.text();
+      return res.status(500).json({ error: `Failed to create API user: ${userRes.status} ${t}` });
+    }
+
+    const keyRes = await fetch(`${MOMO_BASE_URL}/v1_0/apiuser/${referenceId}/apikey`, {
+      method: 'POST',
+      headers: { 'Ocp-Apim-Subscription-Key': MOMO_SUBSCRIPTION_KEY }
+    });
+    if (!keyRes.ok) {
+      const t = await keyRes.text();
+      return res.status(500).json({ error: `Failed to create API key: ${keyRes.status} ${t}` });
+    }
+    const keyData = await keyRes.json();
+
+    res.json({
+      message: 'Success! Copy these two values into Render Environment Variables as MOMO_API_USER and MOMO_API_KEY, then Save Changes.',
+      MOMO_API_USER: referenceId,
+      MOMO_API_KEY: keyData.apiKey
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+async function getMomoAccessToken(): Promise<string> {
+  if (!MOMO_SUBSCRIPTION_KEY || !MOMO_API_USER || !MOMO_API_KEY) {
+    throw new Error('MoMo is not configured yet (missing MOMO_SUBSCRIPTION_KEY / MOMO_API_USER / MOMO_API_KEY).');
+  }
+  const basicAuth = Buffer.from(`${MOMO_API_USER}:${MOMO_API_KEY}`).toString('base64');
+  const tokenRes = await fetch(`${MOMO_BASE_URL}/collection/token/`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Basic ${basicAuth}`,
+      'Ocp-Apim-Subscription-Key': MOMO_SUBSCRIPTION_KEY
+    }
+  });
+  if (!tokenRes.ok) {
+    const t = await tokenRes.text();
+    throw new Error(`MoMo token error (${tokenRes.status}): ${t}`);
+  }
+  const data = await tokenRes.json();
+  return data.access_token;
+}
+
+// Starts a real Request-to-Pay push to the client's phone.
+app.post('/api/momo/request-to-pay', (req, res) => {
+  (async () => {
+    const { jobId, phone, amount } = req.body;
+    if (!jobId || !phone || !amount) {
+      return res.status(400).json({ error: 'jobId, phone, and amount are required.' });
+    }
+    try {
+      const accessToken = await getMomoAccessToken();
+      const referenceId = crypto.randomUUID();
+      let momoPhone = String(phone).replace(/[^\d]/g, '');
+      if (momoPhone.startsWith('0') && momoPhone.length === 10) momoPhone = '250' + momoPhone.slice(1);
+      else if (momoPhone.length === 9) momoPhone = '250' + momoPhone;
+
+      const payRes = await fetch(`${MOMO_BASE_URL}/collection/v1_0/requesttopay`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'X-Reference-Id': referenceId,
+          'X-Target-Environment': MOMO_TARGET_ENVIRONMENT,
+          'Ocp-Apim-Subscription-Key': MOMO_SUBSCRIPTION_KEY!,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          amount: String(amount),
+          currency: MOMO_TARGET_ENVIRONMENT === 'sandbox' ? 'EUR' : 'RWF',
+          externalId: jobId,
+          payer: { partyIdType: 'MSISDN', partyId: momoPhone },
+          payerMessage: 'Manason Engineering - Escrow Payment',
+          payeeNote: `Job ${jobId}`
+        })
+      });
+      if (!payRes.ok) {
+        const t = await payRes.text();
+        return res.status(500).json({ error: `Request to Pay failed (${payRes.status}): ${t}` });
+      }
+      res.json({ referenceId, status: 'pending' });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  })();
+});
+
+// Polls a Request-to-Pay status, and marks the job's escrow as deposited on success.
+app.get('/api/momo/status/:referenceId', (req, res) => {
+  (async () => {
+    try {
+      const accessToken = await getMomoAccessToken();
+      const statusRes = await fetch(`${MOMO_BASE_URL}/collection/v1_0/requesttopay/${req.params.referenceId}`, {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'X-Target-Environment': MOMO_TARGET_ENVIRONMENT,
+          'Ocp-Apim-Subscription-Key': MOMO_SUBSCRIPTION_KEY!
+        }
+      });
+      if (!statusRes.ok) {
+        const t = await statusRes.text();
+        return res.status(500).json({ error: `Status check failed (${statusRes.status}): ${t}` });
+      }
+      const data = await statusRes.json();
+      const jobId = data.externalId;
+      if (data.status === 'SUCCESSFUL' && jobId) {
+        const db = readDB();
+        const job = db.jobs.find(j => j.id === jobId);
+        if (job && job.status !== 'escrow_deposited') {
+          job.status = 'escrow_deposited';
+          writeDB(db);
+        }
+      }
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  })();
+});
 
 // ==========================================
 // API ROUTES
@@ -676,7 +878,7 @@ app.post('/api/auth/register', (req, res) => {
   db.users.push(newUser);
   triggerServerDispatch(db, 'Platform', newUser.name, `Welcome to Manason Engineering! Profile registered.`);
   triggerServerDispatch(db, 'Email', newUser.email, `Hello ${newUser.name}, welcome to MANASON ENGINEERING, Rwanda's Complete Construction Marketplace.`);
-  triggerServerDispatch(db, 'SMS', newUser.phone, `Welcome to Manason Engineering! Login anytime with your credentials.`);
+  triggerServerDispatch(db, 'SMS', newUser.phone, `Welcome to Manason Engineering! Login anytime with your credentials.`, newUser.email);
 
   writeDB(db);
   logAction(newUser.id, newUser.name, 'Register', `User registered as ${newUser.type}.`);
@@ -704,7 +906,7 @@ app.post('/api/admin/verify-user', requireAdminSession, (req, res) => {
   if (userIndex !== -1) {
     db.users[userIndex].isVerified = true;
     triggerServerDispatch(db, 'Platform', db.users[userIndex].name, `Your technical credentials have been verified by Manason Admin.`);
-    triggerServerDispatch(db, 'SMS', db.users[userIndex].phone, `CONGRATULATIONS: Manason Admin reviewed and verified your license and profile.`);
+    triggerServerDispatch(db, 'SMS', db.users[userIndex].phone, `CONGRATULATIONS: Manason Admin reviewed and verified your license and profile.`, db.users[userIndex].email);
     writeDB(db);
     return res.json({ success: true, user: db.users[userIndex] });
   }
@@ -780,6 +982,7 @@ app.post('/api/admin/reply-quote', requireAdminSession, (req, res) => {
   if (quoteIndex !== -1) {
     const q = db.quotes[quoteIndex];
     q.priceOfferedByAdmin = Number(price);
+    q.commission = Math.round(Number(price) * 0.1); // 10% platform commission, same rule as job escrow
     q.isRepliedByAdmin = true;
     q.status = 'replied';
 
@@ -787,7 +990,7 @@ app.post('/api/admin/reply-quote', requireAdminSession, (req, res) => {
     
     const client = db.users.find(u => u.id === q.clientId);
     if (client) {
-      triggerServerDispatch(db, 'SMS', client.phone, `MANASON QUOTE: Your request for "${q.productName}" was answered with custom rate: ${price.toLocaleString()} RWF.`);
+      triggerServerDispatch(db, 'SMS', client.phone, `MANASON QUOTE: Your request for "${q.productName}" was answered with custom rate: ${price.toLocaleString()} RWF.`, client.email);
     }
 
     writeDB(db);
@@ -810,16 +1013,246 @@ app.post('/api/quotes/approve', (req, res) => {
   return res.status(404).json({ error: 'Quotation not found.' });
 });
 
+// Delete Quote (Admin)
+app.delete('/api/quotes/:id', requireAdminSession, (req, res) => {
+  const { id } = req.params;
+  const db = readDB();
+  const index = db.quotes.findIndex(q => q.id === id);
+  if (index !== -1) {
+    const deleted = db.quotes.splice(index, 1)[0];
+    writeDB(db);
+    return res.json({ success: true, quote: deleted });
+  }
+  return res.status(404).json({ error: 'Quotation not found.' });
+});
+
 // Get Quotes
 app.get('/api/quotes', (req, res) => {
   const db = readDB();
   res.json(db.quotes);
 });
 
+// ==========================================
+// STAGE / INTERNSHIP PROGRAM
+// ==========================================
+const STAGE_APPLICATION_FEE_RWF = 5000;
+
+// Get all open Stage postings (public)
+app.get('/api/stage/postings', (req, res) => {
+  const db = readDB();
+  res.json(db.stagePostings || []);
+});
+
+// Create a Stage posting (Admin only — on behalf of a partner construction company)
+app.post('/api/admin/stage/postings', requireAdminSession, (req, res) => {
+  const { companyName, title, field, location, durationWeeks, slots, description } = req.body;
+  if (!companyName || !title || !field) {
+    return res.status(400).json({ error: 'companyName, title, and field are required.' });
+  }
+  const db = readDB();
+  const posting = {
+    id: crypto.randomUUID(),
+    companyName,
+    title,
+    field,
+    location: location || 'Kigali',
+    durationWeeks: Number(durationWeeks) || 8,
+    slots: Number(slots) || 1,
+    description: description || '',
+    isOpen: true,
+    createdAt: new Date().toISOString()
+  };
+  db.stagePostings = db.stagePostings || [];
+  db.stagePostings.unshift(posting);
+  writeDB(db);
+  res.json({ success: true, posting });
+});
+
+// Close/delete a Stage posting (Admin only)
+app.delete('/api/admin/stage/postings/:id', requireAdminSession, (req, res) => {
+  const db = readDB();
+  db.stagePostings = db.stagePostings || [];
+  const index = db.stagePostings.findIndex((p: any) => p.id === req.params.id);
+  if (index !== -1) {
+    const deleted = db.stagePostings.splice(index, 1)[0];
+    writeDB(db);
+    return res.json({ success: true, posting: deleted });
+  }
+  return res.status(404).json({ error: 'Stage posting not found.' });
+});
+
+// Get all Stage applications. Admin sees everyone's; a logged-in student sees only their own.
+app.get('/api/stage/applications', (req, res) => {
+  const db = readDB();
+  const all = db.stageApplications || [];
+  const { studentId } = req.query;
+  if (studentId) {
+    return res.json(all.filter((a: any) => a.studentId === studentId));
+  }
+  res.json(all);
+});
+
+// Submit a Stage application. Created with paymentStatus 'pending' — the
+// 5,000 RWF fee must clear via MoMo before Admin can see/consider it.
+app.post('/api/stage/apply', (req, res) => {
+  const { studentId, studentName, studentPhone, school, fieldOfStudy, postingId, postingTitle, motivation } = req.body;
+  if (!studentId || !studentName || !studentPhone || !school || !fieldOfStudy) {
+    return res.status(400).json({ error: 'Amazina, telefoni, ishuri, n\'ubushobozi bwiga birasabwa.' });
+  }
+  const db = readDB();
+  const application = {
+    id: crypto.randomUUID(),
+    studentId,
+    studentName,
+    studentPhone,
+    school,
+    fieldOfStudy,
+    postingId: postingId || null,
+    postingTitle: postingTitle || 'General Stage Placement',
+    motivation: motivation || '',
+    paymentStatus: 'pending', // 'pending' | 'paid'
+    status: 'submitted', // 'submitted' | 'placed' | 'rejected'
+    momoReferenceId: null as string | null,
+    createdAt: new Date().toISOString()
+  };
+  db.stageApplications = db.stageApplications || [];
+  db.stageApplications.unshift(application);
+  writeDB(db);
+  res.json({ success: true, application });
+});
+
+// Start the 5,000 RWF MoMo Request-to-Pay push for a Stage application.
+app.post('/api/momo/stage/request-to-pay', (req, res) => {
+  (async () => {
+    const { applicationId, phone } = req.body;
+    if (!applicationId || !phone) {
+      return res.status(400).json({ error: 'applicationId and phone are required.' });
+    }
+    try {
+      const accessToken = await getMomoAccessToken();
+      const referenceId = crypto.randomUUID();
+      let momoPhone = String(phone).replace(/[^\d]/g, '');
+      if (momoPhone.startsWith('0') && momoPhone.length === 10) momoPhone = '250' + momoPhone.slice(1);
+      else if (momoPhone.length === 9) momoPhone = '250' + momoPhone;
+
+      const payRes = await fetch(`${MOMO_BASE_URL}/collection/v1_0/requesttopay`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'X-Reference-Id': referenceId,
+          'X-Target-Environment': MOMO_TARGET_ENVIRONMENT,
+          'Ocp-Apim-Subscription-Key': MOMO_SUBSCRIPTION_KEY!,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          amount: String(STAGE_APPLICATION_FEE_RWF),
+          currency: MOMO_TARGET_ENVIRONMENT === 'sandbox' ? 'EUR' : 'RWF',
+          externalId: applicationId,
+          payer: { partyIdType: 'MSISDN', partyId: momoPhone },
+          payerMessage: 'Manason Engineering - Stage Application Fee',
+          payeeNote: `Stage application ${applicationId}`
+        })
+      });
+      if (!payRes.ok) {
+        const t = await payRes.text();
+        return res.status(500).json({ error: `Request to Pay failed (${payRes.status}): ${t}` });
+      }
+
+      const db = readDB();
+      const app_ = (db.stageApplications || []).find((a: any) => a.id === applicationId);
+      if (app_) {
+        app_.momoReferenceId = referenceId;
+        writeDB(db);
+      }
+      res.json({ referenceId, status: 'pending' });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  })();
+});
+
+// Poll the Stage application's MoMo payment status; marks it 'paid' on success.
+app.get('/api/momo/stage/status/:referenceId', (req, res) => {
+  (async () => {
+    try {
+      const accessToken = await getMomoAccessToken();
+      const statusRes = await fetch(`${MOMO_BASE_URL}/collection/v1_0/requesttopay/${req.params.referenceId}`, {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'X-Target-Environment': MOMO_TARGET_ENVIRONMENT,
+          'Ocp-Apim-Subscription-Key': MOMO_SUBSCRIPTION_KEY!
+        }
+      });
+      if (!statusRes.ok) {
+        const t = await statusRes.text();
+        return res.status(500).json({ error: `Status check failed (${statusRes.status}): ${t}` });
+      }
+      const data = await statusRes.json();
+      if (data.status === 'SUCCESSFUL') {
+        const db = readDB();
+        const application = (db.stageApplications || []).find((a: any) => a.id === data.externalId);
+        if (application && application.paymentStatus !== 'paid') {
+          application.paymentStatus = 'paid';
+          writeDB(db);
+          triggerServerDispatch(db, 'Platform', 'Admin', `New PAID Stage application from ${application.studentName} (${application.school}) for "${application.postingTitle}".`);
+        }
+      }
+      res.json({ status: data.status });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  })();
+});
+
+// Admin updates an application's placement outcome (placed / rejected)
+app.patch('/api/admin/stage/applications/:id', requireAdminSession, (req, res) => {
+  const { status } = req.body; // 'placed' | 'rejected'
+  const db = readDB();
+  const application = (db.stageApplications || []).find((a: any) => a.id === req.params.id);
+  if (!application) return res.status(404).json({ error: 'Application not found.' });
+  application.status = status;
+  writeDB(db);
+  const student = db.users.find((u: any) => u.id === application.studentId);
+  if (student) {
+    const msg = status === 'placed'
+      ? `Congratulations! You have been placed for your Stage: "${application.postingTitle}".`
+      : `Update on your Stage application for "${application.postingTitle}".`;
+    triggerServerDispatch(db, 'SMS', student.phone, msg, student.email);
+  }
+  res.json({ success: true, application });
+});
+
+// ==========================================
+// LOYALTY TIERS — commission rate decreases as a worker completes more
+// approved (paid-out) jobs. Rewards reliable, experienced workers with a
+// lower platform cut, while new workers start at the standard 10%.
+// ==========================================
+const LOYALTY_TIERS = [
+  { minCompletedJobs: 30, rate: 0.05, name: 'Gold' },
+  { minCompletedJobs: 5, rate: 0.08, name: 'Silver' },
+  { minCompletedJobs: 0, rate: 0.10, name: 'Bronze' }
+];
+
+function getWorkerLoyaltyTier(db: DatabaseSchema, workerId: string) {
+  const completedJobs = (db.jobs || []).filter(
+    (j: any) => j.workerId === workerId && j.status === 'approved'
+  ).length;
+  const tier = LOYALTY_TIERS.find(t => completedJobs >= t.minCompletedJobs) || LOYALTY_TIERS[LOYALTY_TIERS.length - 1];
+  return { ...tier, completedJobs };
+}
+
 // Get Jobs
 app.get('/api/jobs', (req, res) => {
   const db = readDB();
   res.json(db.jobs);
+});
+
+// Look up a worker's current loyalty tier & commission rate (used by the UI
+// to show the worker their progress before they accept a job).
+app.get('/api/loyalty/:workerId', (req, res) => {
+  const db = readDB();
+  const tier = getWorkerLoyaltyTier(db, req.params.workerId);
+  res.json(tier);
 });
 
 // Create Job Contract (Hire Worker)
@@ -830,11 +1263,13 @@ app.post('/api/jobs', (req, res) => {
   }
 
   const db = readDB();
+  const workerTier = getWorkerLoyaltyTier(db, jobFields.workerId);
   const newJob = {
     ...jobFields,
     id: `j-${Date.now()}`,
     status: 'pending',
-    commission: Math.round(Number(jobFields.price) * 0.1),
+    commission: Math.round(Number(jobFields.price) * workerTier.rate),
+    loyaltyTierAtBooking: workerTier.name,
     progressUpdates: [],
     createdAt: new Date().toISOString().split('T')[0]
   };
@@ -867,9 +1302,23 @@ app.post('/api/jobs', (req, res) => {
   res.json({ success: true, job: newJob });
 });
 
+// Delete Job / Escrow Agreement (Admin)
+app.delete('/api/jobs/:id', requireAdminSession, (req, res) => {
+  const { id } = req.params;
+  const db = readDB();
+  db.jobs = db.jobs || [];
+  const index = db.jobs.findIndex(j => j.id === id);
+  if (index !== -1) {
+    const deletedJob = db.jobs.splice(index, 1)[0];
+    writeDB(db);
+    return res.json({ success: true, job: deletedJob });
+  }
+  return res.status(404).json({ error: 'Job not found' });
+});
+
 // Update Job Status / Escrow Flow
 app.post('/api/jobs/update-status', (req, res) => {
-  const { jobId, status } = req.body;
+  const { jobId, status, requesterId } = req.body;
   if (!jobId || !status) {
     return res.status(400).json({ error: 'Job ID and status required.' });
   }
@@ -881,6 +1330,27 @@ app.post('/api/jobs/update-status', (req, res) => {
   }
 
   const job = db.jobs[jobIndex];
+
+  // Access control: releasing payment ('approved') is never allowed through
+  // this general-purpose route — it can only happen via the protected Admin
+  // resolve-dispute route. For every other status, only the job's own client
+  // or worker (matching the status their role is allowed to set) or a valid
+  // Admin session may make the change.
+  if (status === 'approved') {
+    return res.status(403).json({ error: 'Iyi status ihindurwa gusa na Admin binyuze mu buryo bwemewe (resolve-dispute).' });
+  }
+  const clientStatuses = ['escrow_deposited', 'client_approved', 'disputed'];
+  const workerStatuses = ['travelling', 'arrived', 'working', 'completed', 'disputed'];
+  const adminToken = req.header('x-admin-token');
+  const callerIsAdmin = !!adminToken && db.users.some(
+    (u: any) => u.type === 'Admin' && u.sessionToken === adminToken && u.sessionExpiry && Date.now() <= u.sessionExpiry
+  );
+  const isClientAction = clientStatuses.includes(status) && !!requesterId && requesterId === job.clientId;
+  const isWorkerAction = workerStatuses.includes(status) && !!requesterId && requesterId === job.workerId;
+  if (!isClientAction && !isWorkerAction && !callerIsAdmin) {
+    return res.status(403).json({ error: 'Ntabwo wemerewe guhindura iyi status kuri iri sezerano.' });
+  }
+
   job.status = status;
 
   const worker = db.users.find(u => u.id === job.workerId);
@@ -891,12 +1361,12 @@ app.post('/api/jobs/update-status', (req, res) => {
     if (worker) {
       const trackingLink = `${req.protocol}://${req.get('host')}/?trackJob=${job.id}`;
       triggerServerDispatch(db, 'WhatsApp', worker.phone, `ESCROW SECURED: Client ${job.clientName} deposited funds for "${job.title}". You are authorized to begin travelling/working now! Open this link on your phone to share your live GPS location with the client and admin: ${trackingLink}`);
-      triggerServerDispatch(db, 'SMS', worker.phone, `MANASON: Escrow secured for "${job.title}". Share your live location: ${trackingLink}`);
+      triggerServerDispatch(db, 'SMS', worker.phone, `MANASON: Escrow secured for "${job.title}". Share your live location: ${trackingLink}`, worker.email);
     }
   } else if (status === 'travelling') {
     triggerServerDispatch(db, 'Platform', job.clientName, `Worker ${job.workerName} is travelling to your site.`);
     if (client) {
-      triggerServerDispatch(db, 'SMS', client.phone, `MANASON TRACKING: Specialist ${job.workerName} is now traveling to your location.`);
+      triggerServerDispatch(db, 'SMS', client.phone, `MANASON TRACKING: Specialist ${job.workerName} is now traveling to your location.`, client.email);
     }
   } else if (status === 'arrived') {
     triggerServerDispatch(db, 'Platform', job.clientName, `Worker ${job.workerName} has arrived at the site.`);
@@ -909,14 +1379,14 @@ app.post('/api/jobs/update-status', (req, res) => {
     triggerServerDispatch(db, 'Platform', 'Admin', `Worker ${job.workerName} completed job "${job.title}". Awaiting client approval.`);
     if (client) {
       triggerServerDispatch(db, 'Email', client.email, `Dear ${client.name}, the specialist ${job.workerName} marked your project "${job.title}" as completed. Please inspect and approve to release payment.`);
-      triggerServerDispatch(db, 'SMS', client.phone, `MANASON COMPLETED: "${job.title}" marked done. Please login to review work and approve release.`);
+      triggerServerDispatch(db, 'SMS', client.phone, `MANASON COMPLETED: "${job.title}" marked done. Please login to review work and approve release.`, client.email);
     }
   } else if (status === 'client_approved') {
     triggerServerDispatch(db, 'Platform', 'Admin', `ACTION NEEDED: Client ${job.clientName} confirmed "${job.title}" is complete. Please review the worker's photo/video reports in the Escrow Ledger before releasing payment.`);
   } else if (status === 'approved') {
-    triggerServerDispatch(db, 'Platform', 'Admin', `Client approved job "${job.title}". Autoreleasing ${Math.round(job.price * 0.9).toLocaleString()} RWF to worker (10% platform commission retained).`);
+    triggerServerDispatch(db, 'Platform', 'Admin', `Client approved job "${job.title}". Autoreleasing ${(job.price - job.commission).toLocaleString()} RWF to worker (${job.commission.toLocaleString()} RWF platform commission retained, ${job.loyaltyTierAtBooking || 'Bronze'} tier).`);
     if (worker) {
-      triggerServerDispatch(db, 'SMS', worker.phone, `PAYMENT RELEASED: Admin released ${Math.round(job.price * 0.9).toLocaleString()} RWF to your wallet for "${job.title}". Thank you for working with Manason.`);
+      triggerServerDispatch(db, 'SMS', worker.phone, `PAYMENT RELEASED: Admin released ${Math.round(job.price * 0.9).toLocaleString()} RWF to your wallet for "${job.title}". Thank you for working with Manason.`, worker.email);
     }
   } else if (status === 'disputed') {
     triggerServerDispatch(db, 'Platform', 'Admin', `CRITICAL: Client filed a dispute regarding job "${job.title}". Dispute investigation opened.`);
@@ -1131,7 +1601,7 @@ app.post('/api/job-postings/:id/offer', (req, res) => {
 // Accept an offer (Client) — creates a real Job/escrow contract from it
 app.post('/api/job-postings/:id/accept-offer', (req, res) => {
   const { id } = req.params;
-  const { offerId } = req.body;
+  const { offerId, requesterId } = req.body;
   if (!offerId) {
     return res.status(400).json({ error: 'Offer ID required.' });
   }
@@ -1142,6 +1612,10 @@ app.post('/api/job-postings/:id/accept-offer', (req, res) => {
   if (!posting) {
     return res.status(404).json({ error: 'Job posting not found.' });
   }
+  // Only the client who created this posting may accept an offer on it.
+  if (!requesterId || requesterId !== posting.clientId) {
+    return res.status(403).json({ error: 'Ntabwo wemerewe kwemeza offer kuri iyi job posting.' });
+  }
   if (posting.status !== 'open') {
     return res.status(400).json({ error: 'This job posting has already been awarded or closed.' });
   }
@@ -1151,6 +1625,7 @@ app.post('/api/job-postings/:id/accept-offer', (req, res) => {
   }
 
   // Create the real escrow contract, mirroring POST /api/jobs
+  const workerTier = getWorkerLoyaltyTier(db, offer.workerId);
   const newJob = {
     id: `j-${Date.now()}`,
     clientId: posting.clientId,
@@ -1163,7 +1638,8 @@ app.post('/api/job-postings/:id/accept-offer', (req, res) => {
     price: offer.price,
     status: 'pending',
     location: { lat: -1.9547, lng: 30.0824, address: posting.location },
-    commission: Math.round(Number(offer.price) * 0.1),
+    commission: Math.round(Number(offer.price) * workerTier.rate),
+    loyaltyTierAtBooking: workerTier.name,
     progressUpdates: [],
     createdAt: new Date().toISOString().split('T')[0]
   };
@@ -1212,12 +1688,12 @@ app.post('/api/admin/resolve-dispute', requireAdminSession, (req, res) => {
     if (action === 'release') {
       triggerServerDispatch(db, 'Platform', 'System', `ADMIN RESOLUTION: Admin approved full payment release for "${job.title}" after investigation.`);
       if (worker) {
-        triggerServerDispatch(db, 'SMS', worker.phone, `MANASON DISPUTE RESOLVED: Admin completed escrow audit and released payment of ${Math.round(job.price * 0.9).toLocaleString()} RWF to your wallet.`);
+        triggerServerDispatch(db, 'SMS', worker.phone, `MANASON DISPUTE RESOLVED: Admin completed escrow audit and released payment of ${Math.round(job.price * 0.9).toLocaleString()} RWF to your wallet.`, worker.email);
       }
     } else {
       triggerServerDispatch(db, 'Platform', 'System', `ADMIN RESOLUTION: Admin authorized full escrow refund of ${job.price.toLocaleString()} RWF back to client ${job.clientName}.`);
       if (client) {
-        triggerServerDispatch(db, 'SMS', client.phone, `MANASON DISPUTE RESOLVED: Admin completed escrow audit and refunded your ${job.price.toLocaleString()} RWF fully.`);
+        triggerServerDispatch(db, 'SMS', client.phone, `MANASON DISPUTE RESOLVED: Admin completed escrow audit and refunded your ${job.price.toLocaleString()} RWF fully.`, client.email);
       }
     }
 
@@ -1429,6 +1905,23 @@ app.put('/api/client-requests/:id', requireAdminSession, async (req, res) => {
   res.status(404).json({ error: 'Client request not found.' });
 });
 
+// Delete Client Request (Admin)
+app.delete('/api/client-requests/:id', requireAdminSession, async (req, res) => {
+  const { id } = req.params;
+  const db = readDB();
+  db.clientRequests = db.clientRequests || [];
+  const index = db.clientRequests.findIndex(r => r.id === id);
+  if (index !== -1) {
+    const deletedRequest = db.clientRequests.splice(index, 1)[0];
+    writeDB(db);
+    // Also remove from Supabase, otherwise the next sync (GET /api/client-requests)
+    // pulls it back from Supabase and it reappears even though it was "deleted".
+    await deleteFromSupabase(id);
+    return res.json({ success: true, request: deletedRequest });
+  }
+  return res.status(404).json({ error: 'Client request not found.' });
+});
+
 // Outbound Alerts/Dispatches
 app.get('/api/dispatches', requireAdminSession, (req, res) => {
   const db = readDB();
@@ -1463,9 +1956,16 @@ app.put('/api/users/:id', (req, res) => {
     (u: any) => u.type === 'Admin' && u.sessionToken === adminToken && u.sessionExpiry && Date.now() <= u.sessionExpiry
   );
 
+  // A non-admin caller may only edit their OWN profile — never someone
+  // else's, even if they know that person's user ID.
+  if (!callerIsAdmin && updatedFields.requesterId !== id) {
+    return res.status(403).json({ error: 'Ntushobora guhindura konti y\'undi muntu.' });
+  }
+
   // Never allow these fields to be changed through this general-purpose route,
   // regardless of caller — they have dedicated, protected endpoints.
   delete updatedFields.id;
+  delete updatedFields.requesterId;
   delete updatedFields.password;
   delete updatedFields.sessionToken;
   delete updatedFields.sessionExpiry;
@@ -2006,7 +2506,7 @@ app.put('/api/consultancy/:id', requireAdminSession, (req, res) => {
       con.reply = reply;
       con.status = 'assigned';
       triggerServerDispatch(db, 'Email', con.email, `MANASON ADVISORY REPLY: Our assigned expert, ${assignedExpert || 'Chief Engineer'}, responded to your brief: "${reply}".`);
-      triggerServerDispatch(db, 'SMS', con.phone, `MANASON ADVISORY: Vetted expert assigned. Reply details sent to your registered email/phone.`);
+      triggerServerDispatch(db, 'SMS', con.phone, `MANASON ADVISORY: Vetted expert assigned. Reply details sent to your registered email/phone.`, con.email);
     }
     writeDB(db);
     return res.json({ success: true, consultancy: con });

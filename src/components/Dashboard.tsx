@@ -17,26 +17,27 @@ import {
   AlertTriangle, Trash2, Edit, Plus, FileText, Layout, BarChart2, Bell,
   UserMinus, Upload, Download, Megaphone, Percent, Heart, Play,
   Smartphone, CheckCircle2, Wallet, Send, Sparkles, MessageSquareCode,
-  Briefcase, Lock
+  Briefcase, Lock, GraduationCap
 } from 'lucide-react';
 
 export default function Dashboard() {
   const { 
     currentUser, users, products, jobs, quotes, consultancies, brochures, homepage, projects, clientRequests,
+    stagePostings, stageApplications, addStagePostingByAdmin, deleteStagePostingByAdmin, updateStageApplicationStatus,
     updateJobStatus, addProgressUpdate, submitReview, 
-    replyQuoteByAdmin, approveQuoteByClient, resolveDisputeByAdmin,
+    replyQuoteByAdmin, deleteQuoteByAdmin, approveQuoteByClient, resolveDisputeByAdmin,
     updateUserProfile, deleteUserByAdmin, verifyUserByAdmin,
     addProductByAdmin, updateProductByAdmin, deleteProductByAdmin,
     addBrochureByAdmin, updateBrochureByAdmin, deleteBrochureByAdmin,
     incrementBrochureDownload, updateHomepageByAdmin, replyConsultancyByAdmin,
-    addProjectByAdmin, updateProjectByAdmin, deleteProjectByAdmin, updateClientRequest, uploadFile,
+    addProjectByAdmin, updateProjectByAdmin, deleteProjectByAdmin, deleteJobByAdmin, updateClientRequest, deleteClientRequest, uploadFile,
     submitPaymentReceipt,
     changeAdminPassword, logout
   } = useApp();
   const { t } = useLanguage();
 
   // Tabs
-  const [adminTab, setAdminTab] = useState<'stats' | 'users' | 'products' | 'brochures' | 'escrow' | 'quotes' | 'advisory' | 'homepage' | 'projects' | 'clientRequests' | 'security'>('stats');
+  const [adminTab, setAdminTab] = useState<'stats' | 'users' | 'products' | 'brochures' | 'escrow' | 'quotes' | 'stage' | 'advisory' | 'homepage' | 'projects' | 'clientRequests' | 'security'>('stats');
   const [workerTab, setWorkerTab] = useState<'contracts' | 'profile'>('contracts');
   const [clientTab, setClientTab] = useState<'hired' | 'quotes' | 'consultancy' | 'brochures' | 'favorites'>('hired');
 
@@ -144,6 +145,7 @@ export default function Dashboard() {
   const [workerAvailability, setWorkerAvailability] = useState(currentUser?.availability || 'Available');
   const [workerSkillsInput, setWorkerSkillsInput] = useState(currentUser?.skills?.join(', ') || '');
   const [workerCertsInput, setWorkerCertsInput] = useState(currentUser?.certificates?.join(', ') || '');
+  const [isUploadingPortfolioPhoto, setIsUploadingPortfolioPhoto] = useState(false);
   const [workerAvatar, setWorkerAvatar] = useState(currentUser?.avatarUrl || '');
 
   // Admin homepage text edits
@@ -174,14 +176,23 @@ export default function Dashboard() {
   const clientConsultancies = consultancies.filter(c => c.clientId === currentUser.id);
 
   const workerJobs = jobs.filter(j => j.workerId === currentUser.id);
+  const workerCompletedJobsCount = workerJobs.filter(j => j.status === JobStatus.APPROVED).length;
+  const workerLoyaltyTier =
+    workerCompletedJobsCount >= 30 ? { name: 'Gold', rate: 5, nextAt: null as number | null } :
+    workerCompletedJobsCount >= 5 ? { name: 'Silver', rate: 8, nextAt: 30 } :
+    { name: 'Bronze', rate: 10, nextAt: 5 };
   const workerTotalEarned = jobs
     .filter(j => j.workerId === currentUser.id && j.status === JobStatus.APPROVED)
     .reduce((sum, j) => sum + (j.price - j.commission), 0);
 
   // Stats dashboard calculations
-  const totalCommisionAll = jobs
+  const totalJobCommission = jobs
     .filter(j => j.status === JobStatus.APPROVED)
     .reduce((sum, j) => sum + j.commission, 0);
+  const totalQuoteCommission = quotes
+    .filter(q => q.status === 'approved' && q.commission)
+    .reduce((sum, q) => sum + (q.commission || 0), 0);
+  const totalCommisionAll = totalJobCommission + totalQuoteCommission;
   const totalLockedEscrow = jobs
     .filter(j => j.status !== JobStatus.APPROVED)
     .reduce((sum, j) => sum + j.price, 0);
@@ -210,6 +221,15 @@ export default function Dashboard() {
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
       if (!monthMap[key]) monthMap[key] = { month: key, newUsers: 0, revenue: 0 };
       monthMap[key].revenue += j.commission;
+    });
+
+    quotes.forEach(q => {
+      if (q.status !== 'approved' || !q.commission || !q.createdAt) return;
+      const d = new Date(q.createdAt);
+      if (isNaN(d.getTime())) return;
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      if (!monthMap[key]) monthMap[key] = { month: key, newUsers: 0, revenue: 0 };
+      monthMap[key].revenue += q.commission;
     });
 
     return Object.values(monthMap).sort((a, b) => a.month.localeCompare(b.month));
@@ -390,6 +410,7 @@ export default function Dashboard() {
               {
                 group: 'Services', items: [
                   { id: 'quotes', label: 'Quotation Requests', count: adminPendingQuotes.length, icon: Percent },
+                  { id: 'stage', label: 'Stage Program', count: stageApplications.filter(a => a.paymentStatus === 'paid' && a.status === 'submitted').length, icon: GraduationCap },
                   { id: 'projects', label: 'Projects Management', count: null, icon: Briefcase },
                   { id: 'advisory', label: 'Consultancy Board', count: consultancies.filter(c => !c.reply).length, icon: MessageSquare }
                 ]
@@ -464,7 +485,7 @@ export default function Dashboard() {
                   <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 shadow-xs">
                     <span className="text-xs text-slate-400 font-bold block uppercase tracking-wider">Total Commisions Earned</span>
                     <span className="text-2xl font-extrabold text-blue-900 mt-1 block">{(totalCommisionAll).toLocaleString()} RWF</span>
-                    <span className="text-[10px] text-slate-500 mt-1 block">10% Platform escrow service fee</span>
+                    <span className="text-[10px] text-slate-500 mt-1 block">Platform escrow fee (Loyalty Tiers: 10% / 8% / 5%)</span>
                   </div>
 
                   <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 shadow-xs">
@@ -784,7 +805,10 @@ export default function Dashboard() {
                   <p className="text-xs text-slate-400 italic">No contract agreements are registered on the platform.</p>
                 ) : (
                   <div className="space-y-4">
-                    {jobs.map(job => (
+                    {[...jobs].sort((a, b) => {
+                      const rank = (s: typeof a.status) => s === JobStatus.APPROVED ? 1 : 0;
+                      return rank(a.status) - rank(b.status);
+                    }).map(job => (
                       <div key={job.id} className="p-4 rounded-xl border border-slate-200 flex flex-col justify-between gap-4">
                         <div className="flex justify-between items-start flex-wrap gap-2">
                           <div>
@@ -813,10 +837,19 @@ export default function Dashboard() {
                         {/* Interactive Admin override */}
                         <div className="pt-3 border-t border-slate-100 flex justify-between items-center gap-2 flex-wrap text-xxs">
                           <span className="text-slate-500 font-medium">
-                            Platform Cut (10%): <strong>{job.commission.toLocaleString()} RWF</strong>
+                            Platform Cut ({Math.round((job.commission / job.price) * 100)}%): <strong>{job.commission.toLocaleString()} RWF</strong>
                           </span>
                           
                           <div className="flex gap-2">
+                            <button
+                              onClick={async () => {
+                                if (!confirm(`Emeza ko ushaka gusiba burundu aya masezerano "${job.title}"? Iki gikorwa ntikizasubizwa inyuma.`)) return;
+                                await deleteJobByAdmin(job.id);
+                              }}
+                              className="bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 font-bold uppercase px-2.5 py-1.5 rounded-md flex items-center gap-1"
+                            >
+                              <Trash2 className="w-3 h-3" /> Siba
+                            </button>
                             {['escrow_deposited', 'travelling', 'arrived', 'working'].includes(job.status) && (
                               <button
                                 onClick={() => setExpandedMapJobId(expandedMapJobId === job.id ? null : job.id)}
@@ -895,9 +928,10 @@ export default function Dashboard() {
                               <div className="space-y-2 max-h-48 overflow-y-auto pr-1 mb-3">
                                 {job.progressUpdates.map(pu => (
                                   <div key={pu.id} className="p-2 rounded-lg bg-white border border-purple-100 text-xxs flex gap-2">
-                                    {pu.videoUrl ? (
+                                    {pu.videoUrl && (
                                       <video src={pu.videoUrl} controls className="w-20 h-12 rounded object-cover shrink-0 bg-black" />
-                                    ) : pu.imageUrl && (
+                                    )}
+                                    {pu.imageUrl && (
                                       <img src={pu.imageUrl} className="w-12 h-12 rounded object-cover shrink-0 bg-slate-100" />
                                     )}
                                     <div>
@@ -962,11 +996,22 @@ export default function Dashboard() {
                             <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
                               quote.status === 'pending' ? 'bg-amber-100 text-amber-800' :
                               quote.status === 'replied' ? 'bg-blue-100 text-blue-800' : 'bg-emerald-100 text-emerald-800'
+                            
                             }`}>
                               {quote.status.toUpperCase()}
                             </span>
+                            <button
+                              onClick={async () => {
+                                if (confirm('Ese urifuza gusiba iki gisabwa cy\'igiciro?')) {
+                                  await deleteQuoteByAdmin(quote.id);
+                                }
+                              }}
+                              className="text-rose-600 hover:text-rose-700 p-1"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           </div>
-                          
+                                                      
                           <h4 className="font-bold text-sm text-slate-900 mt-1">
                             {quote.productName}
                           </h4>
@@ -980,33 +1025,46 @@ export default function Dashboard() {
 
                         {/* Admin Offer form */}
                         {!quote.isRepliedByAdmin ? (
-                          <div className="pt-3 border-t border-slate-100 flex items-center gap-2">
-                            <div className="relative flex-1 max-w-xs">
-                              <span className="absolute left-2.5 top-2 text-slate-400 font-bold text-xs">RWF</span>
-                              <input
-                                type="number"
-                                placeholder="Negotiated Bulk Price Offer"
-                                value={repliedPrices[quote.id] || ''}
-                                onChange={(e) => setRepliedPrices({ ...repliedPrices, [quote.id]: e.target.value })}
-                                className="w-full pl-10 pr-2 py-1.5 rounded border border-slate-300 text-xs focus:ring-1 focus:ring-emerald-500 text-slate-800"
-                              />
+                          <div className="pt-3 border-t border-slate-100">
+                            <div className="flex items-center gap-2">
+                              <div className="relative flex-1 max-w-xs">
+                                <span className="absolute left-2.5 top-2 text-slate-400 font-bold text-xs">RWF</span>
+                                <input
+                                  type="number"
+                                  placeholder="Negotiated Bulk Price Offer"
+                                  value={repliedPrices[quote.id] || ''}
+                                  onChange={(e) => setRepliedPrices({ ...repliedPrices, [quote.id]: e.target.value })}
+                                  className="w-full pl-10 pr-2 py-1.5 rounded border border-slate-300 text-xs focus:ring-1 focus:ring-emerald-500 text-slate-800"
+                                />
+                              </div>
+                              <button
+                                onClick={() => {
+                                  const val = repliedPrices[quote.id];
+                                  if (!val) return;
+                                  replyQuoteByAdmin(quote.id, Number(val));
+                                  alert('Bulk negotiated offer sent!');
+                                }}
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xxs font-bold uppercase tracking-wider px-3.5 py-2.5 rounded-md"
+                              >
+                                Send Price Offer
+                              </button>
                             </div>
-                            <button
-                              onClick={() => {
-                                const val = repliedPrices[quote.id];
-                                if (!val) return;
-                                replyQuoteByAdmin(quote.id, Number(val));
-                                alert('Bulk negotiated offer sent!');
-                              }}
-                              className="bg-emerald-600 hover:bg-emerald-700 text-white text-xxs font-bold uppercase tracking-wider px-3.5 py-2.5 rounded-md"
-                            >
-                              Send Price Offer
-                            </button>
+                            {!!Number(repliedPrices[quote.id]) && (
+                              <p className="text-[10px] text-slate-400 mt-1.5 pl-1">
+                                Platform commission (10%): <strong>{Math.round(Number(repliedPrices[quote.id]) * 0.1).toLocaleString()} RWF</strong>
+                                {' • '}Supplier receives: <strong>{Math.round(Number(repliedPrices[quote.id]) * 0.9).toLocaleString()} RWF</strong>
+                              </p>
+                            )}
                           </div>
                         ) : (
                           <div className="text-xxs text-slate-500 bg-white p-3 border rounded flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                             <div>
                               Price offered to Client: <strong className="text-slate-900 font-bold">{quote.priceOfferedByAdmin?.toLocaleString()} RWF</strong>
+                              {quote.commission != null && (
+                                <span className="block sm:inline sm:ml-2 text-slate-400">
+                                  (Commission: {quote.commission.toLocaleString()} RWF • Supplier: {(quote.priceOfferedByAdmin! - quote.commission).toLocaleString()} RWF)
+                                </span>
+                              )}
                             </div>
                             <button
                               onClick={() => triggerQuotationDownload(quote)}
@@ -1021,6 +1079,84 @@ export default function Dashboard() {
                     ))}
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* STAGE PROGRAM TAB */}
+            {adminTab === 'stage' && (
+              <div className="space-y-6">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900 uppercase flex items-center gap-2">
+                    <GraduationCap className="w-5 h-5" /> Stage / Internship Program
+                  </h3>
+                  <p className="text-xs text-slate-500">Manage company internship postings and review paid student applications.</p>
+                </div>
+
+                {/* New posting form */}
+                <StagePostingForm onCreate={addStagePostingByAdmin} />
+
+                {/* Existing postings */}
+                <div>
+                  <h4 className="font-bold text-xs uppercase text-slate-500 mb-2">Open Postings ({stagePostings.length})</h4>
+                  <div className="space-y-2">
+                    {stagePostings.map(p => (
+                      <div key={p.id} className="p-3 rounded-lg border border-slate-200 flex items-center justify-between text-xs bg-slate-50">
+                        <div>
+                          <p className="font-bold text-slate-800">{p.title} — {p.companyName}</p>
+                          <p className="text-slate-400 text-xxs">{p.field} • {p.location} • {p.durationWeeks}w • {p.slots} slot(s)</p>
+                        </div>
+                        <button onClick={() => deleteStagePostingByAdmin(p.id)} className="text-rose-600 hover:text-rose-700 p-1">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                    {stagePostings.length === 0 && (
+                      <p className="text-xs text-slate-400 italic py-2">No postings yet — add one above.</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Applications */}
+                <div>
+                  <h4 className="font-bold text-xs uppercase text-slate-500 mb-2">
+                    Applications ({stageApplications.filter(a => a.paymentStatus === 'paid').length} paid)
+                  </h4>
+                  <div className="space-y-2">
+                    {stageApplications.filter(a => a.paymentStatus === 'paid').map(app => (
+                      <div key={app.id} className="p-3 rounded-lg border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                        <div>
+                          <p className="font-bold text-slate-800">{app.studentName} • {app.studentPhone}</p>
+                          <p className="text-slate-500">{app.school} — {app.fieldOfStudy}</p>
+                          <p className="text-slate-400 text-xxs">{app.postingTitle}</p>
+                          {app.motivation && <p className="text-slate-600 italic mt-1">"{app.motivation}"</p>}
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className={`px-2 py-0.5 rounded text-xxs font-bold uppercase ${
+                            app.status === 'placed' ? 'bg-blue-50 text-blue-700' :
+                            app.status === 'rejected' ? 'bg-rose-50 text-rose-700' : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            {app.status}
+                          </span>
+                          {app.status === 'submitted' && (
+                            <>
+                              <button onClick={() => updateStageApplicationStatus(app.id, 'placed')}
+                                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-xxs font-bold uppercase">
+                                Placed
+                              </button>
+                              <button onClick={() => updateStageApplicationStatus(app.id, 'rejected')}
+                                className="px-2.5 py-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded text-xxs font-bold uppercase">
+                                Reject
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {stageApplications.filter(a => a.paymentStatus === 'paid').length === 0 && (
+                      <p className="text-xs text-slate-400 italic py-2">No paid applications yet.</p>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
 
@@ -1686,19 +1822,32 @@ export default function Dashboard() {
                                 >
                                   Transmit Official Response
                                 </button>
-                                
-                                <button
-                                  type="button"
-                                  onClick={async () => {
-                                    if (confirm('Mark this request as unread?')) {
-                                      await updateClientRequest(req.id, { isRead: false });
+
+                                <div className="flex items-center gap-3">
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      if (confirm('Mark this request as unread?')) {
+                                        await updateClientRequest(req.id, { isRead: false });
+                                        setSelectedReqId(null);
+                                      }
+                                    }}
+                                    className="text-slate-500 hover:text-slate-700 text-[10px] font-bold uppercase tracking-wider"
+                                  >
+                                    Mark as Unread
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      if (!confirm(`Emeza ko ushaka gusiba burundu iri tangazo "${req.title}"? Iki gikorwa ntikizasubizwa inyuma.`)) return;
+                                      await deleteClientRequest(req.id);
                                       setSelectedReqId(null);
-                                    }
-                                  }}
-                                  className="text-slate-500 hover:text-slate-700 text-[10px] font-bold uppercase tracking-wider"
-                                >
-                                  Mark as Unread
-                                </button>
+                                    }}
+                                    className="flex items-center gap-1 text-red-600 hover:text-red-800 text-[10px] font-bold uppercase tracking-wider"
+                                  >
+                                    <Trash2 className="w-3 h-3" /> Siba
+                                  </button>
+                                </div>
                               </div>
                             </div>
                           </div>
@@ -1856,9 +2005,10 @@ export default function Dashboard() {
                                 <div className="space-y-3 max-h-40 overflow-y-auto pr-2">
                                   {job.progressUpdates.map(pu => (
                                     <div key={pu.id} className="p-2.5 rounded-lg bg-white border border-slate-200 text-xs flex gap-2">
-                                      {pu.videoUrl ? (
+                                      {pu.videoUrl && (
                                         <video src={pu.videoUrl} controls className="w-16 h-10 rounded object-cover shrink-0 bg-black" />
-                                      ) : pu.imageUrl && (
+                                      )}
+                                      {pu.imageUrl && (
                                         <img src={pu.imageUrl} className="w-10 h-10 rounded object-cover shrink-0 bg-slate-100" />
                                       )}
                                       <div>
@@ -2293,6 +2443,28 @@ export default function Dashboard() {
             {/* WORKER CONTRACTS TAB */}
             {workerTab === 'contracts' && (
               <div className="space-y-6">
+                {/* Loyalty Tier badge */}
+                <div className={`rounded-xl p-4 border flex items-center justify-between flex-wrap gap-3 ${
+                  workerLoyaltyTier.name === 'Gold' ? 'bg-amber-50 border-amber-200' :
+                  workerLoyaltyTier.name === 'Silver' ? 'bg-slate-100 border-slate-300' :
+                  'bg-orange-50 border-orange-200'
+                }`}>
+                  <div>
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">Your Loyalty Tier</span>
+                    <span className="text-lg font-extrabold text-slate-900">{workerLoyaltyTier.name} — {workerLoyaltyTier.rate}% commission</span>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {workerCompletedJobsCount} completed job{workerCompletedJobsCount !== 1 ? 's' : ''}
+                      {workerLoyaltyTier.nextAt !== null && (
+                        <> • {workerLoyaltyTier.nextAt - workerCompletedJobsCount} more to reach the next tier</>
+                      )}
+                    </p>
+                  </div>
+                  <Award className={`w-8 h-8 ${
+                    workerLoyaltyTier.name === 'Gold' ? 'text-amber-500' :
+                    workerLoyaltyTier.name === 'Silver' ? 'text-slate-400' : 'text-orange-400'
+                  }`} />
+                </div>
+
                 <div>
                   <h3 className="text-lg font-bold text-slate-900 uppercase">My Active Client Construction Contracts</h3>
                   <p className="text-xs text-slate-500">Respond to client hires, transition project steps, and post masonry logs.</p>
@@ -2327,7 +2499,7 @@ export default function Dashboard() {
                             <span className="text-[10px] text-slate-400 uppercase font-bold block">Contract Escrow Value</span>
                             <span className="font-bold text-slate-900 text-base block mt-0.5">{job.price.toLocaleString()} RWF</span>
                             <span className="text-[10px] text-emerald-600 font-medium block mt-0.5">
-                              Your earnings (after 10% platform fee): <strong>{(job.price - job.commission).toLocaleString()} RWF</strong>
+                              Your earnings (after {Math.round((job.commission / job.price) * 100)}% platform fee): <strong>{(job.price - job.commission).toLocaleString()} RWF</strong>
                             </span>
                           </div>
                         </div>
@@ -2679,6 +2851,68 @@ export default function Dashboard() {
                         onChange={(e) => setWorkerCertsInput(e.target.value)}
                         className="w-full px-3 py-2 rounded-xl border border-slate-300 text-sm"
                       />
+                    </div>
+
+                    {/* Portfolio Gallery — photos of past completed work */}
+                    <div className="md:col-span-2 pt-4 border-t border-slate-100">
+                      <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                        Portfolio — Photos of Past Work
+                      </label>
+                      <p className="text-xxs text-slate-400 mb-3">
+                        Show clients real examples of jobs you've completed. These appear on your public profile card.
+                      </p>
+
+                      <div className="grid grid-cols-3 sm:grid-cols-4 gap-3 mb-3">
+                        {(currentUser.portfolioImages || []).map((url, idx) => (
+                          <div key={idx} className="relative group aspect-square rounded-lg overflow-hidden border border-slate-200">
+                            <img src={url} alt={`Portfolio ${idx + 1}`} className="w-full h-full object-cover" />
+                            <button
+                              onClick={async () => {
+                                const updated = (currentUser.portfolioImages || []).filter((_, i) => i !== idx);
+                                await updateUserProfile(currentUser.id, { portfolioImages: updated });
+                              }}
+                              className="absolute top-1 right-1 w-5 h-5 rounded-full bg-slate-900/70 text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+
+                        <input
+                          type="file"
+                          accept="image/*"
+                          id="portfolio-photo-upload"
+                          className="hidden"
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            if (!file) return;
+                            setIsUploadingPortfolioPhoto(true);
+                            try {
+                              const base64String: string = await new Promise((resolve, reject) => {
+                                const reader = new FileReader();
+                                reader.onloadend = () => resolve(reader.result as string);
+                                reader.onerror = reject;
+                                reader.readAsDataURL(file);
+                              });
+                              const url = await uploadFile(file.name, file.type, base64String);
+                              const updated = [...(currentUser.portfolioImages || []), url];
+                              await updateUserProfile(currentUser.id, { portfolioImages: updated });
+                            } catch (err: any) {
+                              alert(err.message || 'Photo upload failed.');
+                            } finally {
+                              setIsUploadingPortfolioPhoto(false);
+                              e.target.value = '';
+                            }
+                          }}
+                        />
+                        <label
+                          htmlFor="portfolio-photo-upload"
+                          className="aspect-square rounded-lg border-2 border-dashed border-slate-300 hover:border-blue-400 flex flex-col items-center justify-center gap-1 text-slate-400 hover:text-blue-600 cursor-pointer text-xxs font-bold text-center px-1"
+                        >
+                          <Image className="w-5 h-5" />
+                          {isUploadingPortfolioPhoto ? 'Uploading...' : 'Add Photo'}
+                        </label>
+                      </div>
                     </div>
                   </div>
 
@@ -3347,13 +3581,49 @@ export default function Dashboard() {
 
                       <button
                         type="button"
-                        onClick={() => {
+                        onClick={async () => {
                           if (!momoPhoneNumber.trim() || momoPhoneNumber.length < 8) {
                             alert('Nyamuneka injiza nimero ya telefoni iboneye.');
                             return;
                           }
-                          setMomoStatus('push_sent');
-                          setMomoPin('');
+                          try {
+                            const resp = await fetch('/api/momo/request-to-pay', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ jobId: momoJob.id, phone: momoPhoneNumber, amount: momoJob.price })
+                            });
+                            const data = await resp.json();
+                            if (!resp.ok) {
+                              alert(`MoMo ntibyakunze: ${data.error || 'Ikosa ritazwi'}`);
+                              return;
+                            }
+                            setMomoTxId(data.referenceId);
+                            // Real MoMo approval happens on the CLIENT's own phone (USSD/app
+                            // prompt) — we never collect their PIN. Poll MTN for the result.
+                            setMomoStatus('verifying');
+                            let confirmed = false;
+                            for (let attempt = 0; attempt < 20; attempt++) {
+                              await new Promise(resolve => setTimeout(resolve, 3000));
+                              const statusResp = await fetch(`/api/momo/status/${data.referenceId}`);
+                              const statusData = await statusResp.json();
+                              if (statusData.status === 'SUCCESSFUL') {
+                                confirmed = true;
+                                break;
+                              }
+                              if (statusData.status === 'FAILED') {
+                                break;
+                              }
+                            }
+                            if (confirmed) {
+                              await updateJobStatus(momoJob.id, JobStatus.ESCROW_DEPOSITED);
+                              setMomoStatus('success');
+                            } else {
+                              setMomoStatus('failed');
+                            }
+                          } catch (err: any) {
+                            alert(`MoMo ntibyakunze: ${err.message}`);
+                            setMomoStatus('idle');
+                          }
                         }}
                         className={`w-full font-bold uppercase text-xs py-3 rounded-xl shadow-md flex items-center justify-center gap-1.5 transition-all ${
                           momoProvider === 'MTN' 
@@ -3542,3 +3812,53 @@ export default function Dashboard() {
     </div>
   );
 }
+
+// Small self-contained form used inside the Admin "Stage Program" tab to
+// create a new company internship posting.
+function StagePostingForm({ onCreate }: { onCreate: (fields: any) => Promise<void> }) {
+  const [companyName, setCompanyName] = useState('');
+  const [title, setTitle] = useState('');
+  const [field, setField] = useState('');
+  const [location, setLocation] = useState('Kigali');
+  const [durationWeeks, setDurationWeeks] = useState(8);
+  const [slots, setSlots] = useState(1);
+  const [description, setDescription] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!companyName || !title || !field) return;
+    setSaving(true);
+    await onCreate({ companyName, title, field, location, durationWeeks, slots, description });
+    setSaving(false);
+    setCompanyName(''); setTitle(''); setField(''); setLocation('Kigali');
+    setDurationWeeks(8); setSlots(1); setDescription('');
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-3">
+      <h4 className="font-bold text-xs uppercase text-slate-500">New Stage Posting</h4>
+      <div className="grid sm:grid-cols-2 gap-3">
+        <input required placeholder="Company Name" value={companyName} onChange={e => setCompanyName(e.target.value)}
+          className="px-3 py-2 rounded-md border border-slate-300 text-xs" />
+        <input required placeholder="Posting Title (e.g. Site Supervision Stage)" value={title} onChange={e => setTitle(e.target.value)}
+          className="px-3 py-2 rounded-md border border-slate-300 text-xs" />
+        <input required placeholder="Field (e.g. Civil Engineering)" value={field} onChange={e => setField(e.target.value)}
+          className="px-3 py-2 rounded-md border border-slate-300 text-xs" />
+        <input placeholder="Location" value={location} onChange={e => setLocation(e.target.value)}
+          className="px-3 py-2 rounded-md border border-slate-300 text-xs" />
+        <input type="number" min={1} placeholder="Duration (weeks)" value={durationWeeks} onChange={e => setDurationWeeks(Number(e.target.value))}
+          className="px-3 py-2 rounded-md border border-slate-300 text-xs" />
+        <input type="number" min={1} placeholder="Slots" value={slots} onChange={e => setSlots(Number(e.target.value))}
+          className="px-3 py-2 rounded-md border border-slate-300 text-xs" />
+      </div>
+      <textarea rows={2} placeholder="Short description (optional)" value={description} onChange={e => setDescription(e.target.value)}
+        className="w-full px-3 py-2 rounded-md border border-slate-300 text-xs" />
+      <button type="submit" disabled={saving}
+        className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg font-bold text-xs uppercase tracking-wide disabled:opacity-50">
+        {saving ? 'Saving...' : 'Add Posting'}
+      </button>
+    </form>
+  );
+}
+

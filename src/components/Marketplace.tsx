@@ -141,14 +141,19 @@ export default function Marketplace() {
 
                   {/* Pricing / CTA Section */}
                   <div className="pt-4 mt-4 border-t border-slate-100">
-                    <div className="flex items-baseline justify-between mb-4">
+                    <div className="flex items-baseline justify-between mb-1">
                       <div>
                         <span className="text-slate-400 text-[10px] uppercase font-bold tracking-wider block">
-                          Igiciro
+                          {t('estimatedPriceLabel')}
                         </span>
-                        <span className="font-bold text-slate-700 text-sm">
-                          Saba Igiciro Cyihariye
+                        <span className="font-bold text-slate-900 text-lg">
+                          {(product.isPromotion && product.promoPrice ? product.promoPrice : product.price).toLocaleString()} RWF
                         </span>
+                        {product.isPromotion && product.promoPrice && (
+                          <span className="ml-2 text-slate-400 text-xs line-through">
+                            {product.price.toLocaleString()} RWF
+                          </span>
+                        )}
                       </div>
 
                       {/* Live Price verification */}
@@ -156,6 +161,9 @@ export default function Marketplace() {
                         {t('livePrices')}
                       </span>
                     </div>
+                    <p className="text-[10px] text-slate-400 mb-3">
+                      {t('priceMayVaryNote')}
+                    </p>
 
                     <div className="space-y-2">
                       {/* Active Quote status notice */}
@@ -185,14 +193,14 @@ export default function Marketplace() {
                           onClick={() => setQuoteTarget(product)}
                           className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg font-bold text-xs tracking-wide uppercase shadow-sm transition-all"
                         >
-                          {t('requestPriceButton')}
+                          {t('requestQuoteButton')}
                         </button>
                       ) : (
                         <button
                           onClick={() => setIsAuthOpen(true)}
                           className="w-full py-2.5 bg-slate-200 text-slate-600 hover:bg-slate-300 rounded-lg font-bold text-xs tracking-wide uppercase transition-all"
                         >
-                          Login to Request Price
+                          {t('requestQuoteButton')}
                         </button>
                       )}
 

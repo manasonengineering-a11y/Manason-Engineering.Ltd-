@@ -11,7 +11,8 @@ export enum UserType {
   COMPANY = 'Construction Company',
   GROUP = 'Construction Group',
   SUPPLIER = 'Supplier',
-  MANUFACTURER = 'Manufacturer'
+  MANUFACTURER = 'Manufacturer',
+  STUDENT = 'Student'
 }
 
 export enum JobStatus {
@@ -47,6 +48,9 @@ export interface User {
   specialty?: string;
   idDocumentUrl?: string; // Uploaded scan/photo of National ID or Passport, for Admin verification
   companyBrochureUrl?: string; // Uploaded product catalogue/corporate brochure for Company/Supplier profiles
+  portfolioImages?: string[]; // Photos of past completed work, shown on the worker's public profile card
+  paypalEmail?: string; // Optional — used for real PayPal Payouts when Admin releases escrow funds
+  momoPhone?: string; // Optional — MoMo payout number, if different from the main contact phone
   
   // Groups
   groupMembers?: string[]; // list of names
@@ -89,12 +93,25 @@ export interface Job {
   // confirming the deposit and unlocking the contract.
   paymentReceiptUrl?: string;
   paymentReceiptUploadedAt?: string;
+  // Real-time payment gateway tracking (MTN MoMo Collections / PayPal Orders).
+  // Populated automatically once a live payment request is initiated; when the
+  // gateway confirms SUCCESSFUL, the server auto-advances status to ESCROW_DEPOSITED.
+  paymentMethod?: 'momo' | 'paypal' | 'manual';
+  momoReferenceId?: string;
+  momoPaymentStatus?: 'PENDING' | 'SUCCESSFUL' | 'FAILED';
+  paypalOrderId?: string;
+  paypalPaymentStatus?: 'PENDING' | 'SUCCESSFUL' | 'FAILED';
+  // Payout (disbursement) tracking — set when Admin releases funds to the worker.
+  payoutMethod?: 'momo' | 'paypal' | 'manual';
+  payoutReferenceId?: string;
+  payoutStatus?: 'PENDING' | 'SUCCESSFUL' | 'FAILED';
   liveLocation?: {
     lat: number;
     lng: number;
     updatedAt: string;
   };
-  commission: number; // 10%
+  commission: number; // Platform's cut, based on the worker's Loyalty Tier at booking time (10% Bronze / 8% Silver / 5% Gold)
+  loyaltyTierAtBooking?: 'Bronze' | 'Silver' | 'Gold';
   progressUpdates: ProgressUpdate[];
   clientRating?: number;
   workerRating?: number;
@@ -162,8 +179,38 @@ export interface QuoteRequest {
   supplierName: string;
   details: string;
   priceOfferedByAdmin?: number;
+  commission?: number; // 10% of priceOfferedByAdmin, platform's cut
   isRepliedByAdmin: boolean;
   status: 'pending' | 'replied' | 'approved' | 'paid';
+  createdAt: string;
+}
+
+export interface StagePosting {
+  id: string;
+  companyName: string;
+  title: string;
+  field: string;
+  location: string;
+  durationWeeks: number;
+  slots: number;
+  description: string;
+  isOpen: boolean;
+  createdAt: string;
+}
+
+export interface StageApplication {
+  id: string;
+  studentId: string;
+  studentName: string;
+  studentPhone: string;
+  school: string;
+  fieldOfStudy: string;
+  postingId: string | null;
+  postingTitle: string;
+  motivation: string;
+  paymentStatus: 'pending' | 'paid';
+  status: 'submitted' | 'placed' | 'rejected';
+  momoReferenceId: string | null;
   createdAt: string;
 }
 

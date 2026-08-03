@@ -13,6 +13,7 @@ import Logo from './components/Logo';
 import AuthModal from './components/AuthModal';
 import WorkersDirectory from './components/WorkersDirectory';
 import Marketplace from './components/Marketplace';
+import StageProgram from './components/StageProgram';
 import ConsultancySection from './components/ConsultancySection';
 import JobPostingBoard from './components/JobPostingBoard';
 import Dashboard from './components/Dashboard';
@@ -37,7 +38,7 @@ function AppContent() {
     return <WorkerTrackingPage jobId={trackJobId} />;
   }
   
-  const [activeView, setActiveView] = useState<'home' | 'workers' | 'products' | 'consultancy' | 'jobBoard' | 'projects' | 'about' | 'contact' | 'dashboard'>('home');
+  const [activeView, setActiveView] = useState<'home' | 'workers' | 'products' | 'consultancy' | 'jobBoard' | 'projects' | 'stage' | 'about' | 'contact' | 'dashboard'>('home');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [contactSubject, setContactSubject] = useState('');
   const [contactMessage, setContactMessage] = useState('');
@@ -152,9 +153,9 @@ function AppContent() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-20 items-center">
             
-            {/* Logo Link to Home */}
-            <div className="cursor-pointer flex-shrink-0" onClick={() => { setActiveView('home'); setIsMenuOpen(false); }}>
-              <Logo height={44} />
+            {/* Logo removed */}
+            <div className="cursor-pointer flex-shrink-0 font-extrabold text-slate-900 tracking-tight" onClick={() => { setActiveView('home'); setIsMenuOpen(false); }}>
+              Manason
             </div>
 
             {/* Desktop Navigation Links */}
@@ -165,6 +166,7 @@ function AppContent() {
                 { id: 'products', label: t('products') },
                 { id: 'consultancy', label: t('consultancy') },
                 { id: 'jobBoard', label: t('jpNavLabel') },
+                { id: 'stage', label: t('stageNavLabel') },
                 { id: 'projects', label: t('projects') },
                 { id: 'about', label: t('about') },
                 { id: 'contact', label: t('contact') }
@@ -199,34 +201,6 @@ function AppContent() {
 
             {/* Language switch & Authentication Center */}
             <div className="hidden xl:flex items-center gap-3">
-              
-              {/* Language Switcher */}
-              <div className="flex items-center gap-1 border border-slate-200 rounded-lg p-1 bg-slate-50">
-                <button
-                  onClick={() => setLanguage('en')}
-                  className={`px-2 py-1 rounded text-xxs font-bold uppercase transition-all ${
-                    language === 'en' ? 'bg-blue-800 text-white shadow' : 'text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  EN
-                </button>
-                <button
-                  onClick={() => setLanguage('rw')}
-                  className={`px-2 py-1 rounded text-xxs font-bold uppercase transition-all ${
-                    language === 'rw' ? 'bg-blue-800 text-white shadow' : 'text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  RW
-                </button>
-                <button
-                  onClick={() => setLanguage('fr')}
-                  className={`px-2 py-1 rounded text-xxs font-bold uppercase transition-all ${
-                    language === 'fr' ? 'bg-blue-800 text-white shadow' : 'text-slate-500 hover:text-slate-800'
-                  }`}
-                >
-                  FR
-                </button>
-              </div>
 
               {/* Login / Profile logic */}
               {currentUser ? (
@@ -275,6 +249,7 @@ function AppContent() {
               { id: 'products', label: t('products') },
               { id: 'consultancy', label: t('consultancy') },
               { id: 'jobBoard', label: t('jpNavLabel') },
+              { id: 'stage', label: t('stageNavLabel') },
               { id: 'projects', label: t('projects') },
               { id: 'about', label: t('about') },
               { id: 'contact', label: t('contact') }
@@ -672,6 +647,11 @@ function AppContent() {
         {/* VIEW: JOB POSTING BOARD */}
         {activeView === 'jobBoard' && (
           <JobPostingBoard />
+        )}
+
+        {/* VIEW: STAGE / INTERNSHIP PROGRAM */}
+        {activeView === 'stage' && (
+          <StageProgram />
         )}
 
         {/* VIEW: PROJECTS (RWANDAN BUILDINGS PORTFOLIO) */}

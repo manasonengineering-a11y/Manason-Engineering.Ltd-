@@ -11,8 +11,15 @@ import { useLanguage } from './LanguageContext';
 import { User, UserType } from '../types';
 import { Search, MapPin, CheckCircle, Clock, Award, Shield, UserCheck, Star, Sparkles, Compass } from 'lucide-react';
 
+function getWorkerLoyaltyBadge(jobs: { workerId: string; status: string }[], workerId: string) {
+  const completed = jobs.filter(j => j.workerId === workerId && j.status === 'approved').length;
+  if (completed >= 30) return { name: 'Gold', completed };
+  if (completed >= 5) return { name: 'Silver', completed };
+  return null; // Bronze (default tier) isn't shown as a badge — only earned tiers stand out
+}
+
 export default function WorkersDirectory() {
-  const { users, currentUser, addJob, updateUserProfile, setIsAuthOpen } = useApp();
+  const { users, jobs, currentUser, addJob, updateUserProfile, setIsAuthOpen } = useApp();
   const { t } = useLanguage();
   
   // Search state
@@ -464,7 +471,7 @@ export default function WorkersDirectory() {
                   <div>
                     <div className="flex items-center gap-3 mb-4">
                       <img
-                        src={selectedWorkerOnMap.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80'}
+                        src={selectedWorkerOnMap.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(selectedWorkerOnMap.name || 'User')}&background=1e3a8a&color=fff&bold=true&size=150`}
                         alt={selectedWorkerOnMap.name}
                         className="w-12 h-12 rounded-xl object-cover border border-slate-700 bg-slate-900"
                         referrerPolicy="no-referrer"
@@ -512,6 +519,19 @@ export default function WorkersDirectory() {
                               <span key={sk} className="bg-slate-900 border border-slate-800 text-slate-400 text-[9px] px-1.5 py-0.5 rounded">
                                 {sk}
                               </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {selectedWorkerOnMap.portfolioImages && selectedWorkerOnMap.portfolioImages.length > 0 && (
+                        <div>
+                          <span className="text-slate-500 text-[10px] uppercase font-bold block tracking-wider mb-1">
+                            Past Work
+                          </span>
+                          <div className="flex gap-1">
+                            {selectedWorkerOnMap.portfolioImages.slice(0, 3).map((url, idx) => (
+                              <img key={idx} src={url} alt={`Past work ${idx + 1}`} className="w-10 h-10 rounded object-cover border border-slate-800" />
                             ))}
                           </div>
                         </div>
@@ -599,6 +619,20 @@ export default function WorkersDirectory() {
                             <UserCheck className="w-3 h-3 text-blue-700" /> {t('verifiedBadge')}
                           </span>
                         )}
+
+                        {(() => {
+                          const badge = getWorkerLoyaltyBadge(jobs, worker.id);
+                          if (!badge) return null;
+                          return (
+                            <span className={`flex items-center gap-0.5 text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                              badge.name === 'Gold'
+                                ? 'bg-amber-100 text-amber-800 border-amber-200'
+                                : 'bg-slate-200 text-slate-700 border-slate-300'
+                            }`}>
+                              <Award className="w-3 h-3" /> {badge.name} Partner
+                            </span>
+                          );
+                        })()}
                       </div>
                       
                       <h3 className="font-bold text-slate-900 text-base mt-1.5 group-hover:text-blue-800 transition-colors">
@@ -633,6 +667,25 @@ export default function WorkersDirectory() {
                             {t('moreSkillsCount').replace('{count}', String(worker.skills.length - 4))}
                           </span>
                         )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Portfolio — photos of past completed work */}
+                  {worker.portfolioImages && worker.portfolioImages.length > 0 && (
+                    <div className="mb-4">
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                        Past Work
+                      </p>
+                      <div className="flex gap-1.5">
+                        {worker.portfolioImages.slice(0, 4).map((url, idx) => (
+                          <img
+                            key={idx}
+                            src={url}
+                            alt={`${worker.name} past work ${idx + 1}`}
+                            className="w-12 h-12 rounded-md object-cover border border-slate-200 flex-1"
+                          />
+                        ))}
                       </div>
                     </div>
                   )}
@@ -783,6 +836,25 @@ export default function WorkersDirectory() {
                 ✕
               </button>
             </div>
+
+            {/* Portfolio preview — shown before the client commits to hiring */}
+            {!isHiredSuccess && hiringTarget.portfolioImages && hiringTarget.portfolioImages.length > 0 && (
+              <div className="px-6 pt-4 bg-slate-50 border-b border-slate-100">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">
+                  {hiringTarget.name}'s Past Work — review before you hire
+                </p>
+                <div className="flex gap-2 overflow-x-auto pb-4">
+                  {hiringTarget.portfolioImages.map((url, idx) => (
+                    <img
+                      key={idx}
+                      src={url}
+                      alt={`Past work ${idx + 1}`}
+                      className="w-20 h-20 rounded-lg object-cover border border-slate-200 shrink-0"
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
 
             {isHiredSuccess ? (
               <div className="p-8 text-center text-slate-800">

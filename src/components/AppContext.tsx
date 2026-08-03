@@ -4,7 +4,7 @@
  */
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { User, UserType, Job, JobStatus, Product, QuoteRequest, Message, ConsultancyRequest, ProgressUpdate, Brochure, HomepageSettings, Project, ClientRequest, JobPosting } from '../types';
+import { User, UserType, Job, JobStatus, Product, QuoteRequest, Message, ConsultancyRequest, ProgressUpdate, Brochure, HomepageSettings, Project, ClientRequest, JobPosting, StagePosting, StageApplication } from '../types';
 
 export interface OutboundDispatch {
   id: string;
@@ -28,6 +28,8 @@ interface AppContextType {
   homepage: HomepageSettings | null;
   projects: Project[];
   clientRequests: ClientRequest[];
+  stagePostings: StagePosting[];
+  stageApplications: StageApplication[];
   isLoading: boolean;
   isAuthOpen: boolean;
   setIsAuthOpen: (open: boolean) => void;
@@ -49,9 +51,20 @@ interface AppContextType {
   updateJobStatus: (jobId: string, status: JobStatus) => Promise<void>;
   addProgressUpdate: (jobId: string, comment: string, imageUrl?: string, videoUrl?: string) => Promise<void>;
   submitPaymentReceipt: (jobId: string, receiptUrl: string) => Promise<void>;
+  initiateMomoPayment: (jobId: string, phone: string) => Promise<{ success: boolean; referenceId?: string; error?: string; simulation?: boolean }>;
+  checkMomoPaymentStatus: (jobId: string) => Promise<{ success: boolean; status?: string; error?: string }>;
+  initiatePaypalPayment: (jobId: string) => Promise<{ success: boolean; orderId?: string; approveUrl?: string; error?: string; simulation?: boolean }>;
+  capturePaypalPayment: (jobId: string, orderId: string) => Promise<{ success: boolean; status?: string; error?: string }>;
   submitReview: (jobId: string, rating: number, comment: string, isClientReview: boolean) => Promise<void>;
   addQuoteRequest: (productId: string, details: string) => Promise<void>;
+  addStagePostingByAdmin: (fields: Omit<StagePosting, 'id' | 'isOpen' | 'createdAt'>) => Promise<void>;
+  deleteStagePostingByAdmin: (postingId: string) => Promise<void>;
+  submitStageApplication: (fields: { studentName: string; studentPhone: string; school: string; fieldOfStudy: string; postingId: string | null; postingTitle: string; motivation: string; }) => Promise<StageApplication>;
+  initiateStagePayment: (applicationId: string, phone: string) => Promise<{ success: boolean; referenceId?: string; error?: string }>;
+  checkStagePaymentStatus: (referenceId: string) => Promise<{ success: boolean; status?: string; error?: string }>;
+  updateStageApplicationStatus: (applicationId: string, status: 'placed' | 'rejected') => Promise<void>;
   replyQuoteByAdmin: (quoteId: string, price: number) => Promise<void>;
+  deleteQuoteByAdmin: (quoteId: string) => Promise<void>;
   approveQuoteByClient: (quoteId: string) => Promise<void>;
   sendMessage: (receiverId: string, content: string, channel?: 'chat' | 'whatsapp' | 'sms' | 'email') => Promise<void>;
   addConsultancy: (type: 'architecture' | 'engineering' | 'quantity_surveying', details: string, budget: string, phone: string, email: string) => Promise<void>;
@@ -65,10 +78,12 @@ interface AppContextType {
   addProjectByAdmin: (project: Omit<Project, 'id'>) => Promise<void>;
   updateProjectByAdmin: (projectId: string, fields: Partial<Project>) => Promise<void>;
   deleteProjectByAdmin: (projectId: string) => Promise<void>;
+  deleteJobByAdmin: (jobId: string) => Promise<void>;
   clearDispatches: () => Promise<void>;
   askAiFeasibility: (projectType: string, details: string, budget: string, location: string) => Promise<string>;
   addClientRequest: (request: Omit<ClientRequest, 'id' | 'isRead' | 'createdAt'>) => Promise<void>;
   updateClientRequest: (id: string, fields: Partial<ClientRequest>) => Promise<void>;
+  deleteClientRequest: (id: string) => Promise<void>;
   syncDatabase: (silent?: boolean) => Promise<void>;
   settings: any;
   updateSettings: (fields: any) => Promise<void>;
@@ -112,6 +127,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [jobPostings, setJobPostings] = useState<JobPosting[]>([]);
   const [quotes, setQuotes] = useState<QuoteRequest[]>([]);
+  const [stagePostings, setStagePostings] = useState<StagePosting[]>([]);
+  const [stageApplications, setStageApplications] = useState<StageApplication[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [consultancies, setConsultancies] = useState<ConsultancyRequest[]>([]);
   const [dispatches, setDispatches] = useState<OutboundDispatch[]>([]);
@@ -133,7 +150,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const [
         usersRes, productsRes, jobsRes, quotesRes, messagesRes,
         consultanciesRes, brochuresRes, homepageRes,
-        projectsRes, settingsRes, adsRes, jobPostingsRes
+        projectsRes, settingsRes, adsRes, jobPostingsRes,
+        stagePostingsRes, stageApplicationsRes
       ] = await Promise.all([
         fetch('/api/users').then(r => {
           if (!r.ok) throw new Error('Failed to fetch users');
@@ -182,6 +200,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         fetch('/api/job-postings').then(r => {
           if (!r.ok) throw new Error('Failed to fetch job postings');
           return r.json();
+        }),
+        fetch('/api/stage/postings').then(r => {
+          if (!r.ok) throw new Error('Failed to fetch stage postings');
+          return r.json();
+        }),
+        fetch('/api/stage/applications').then(r => {
+          if (!r.ok) throw new Error('Failed to fetch stage applications');
+          return r.json();
         })
       ]);
 
@@ -197,6 +223,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setSettings(settingsRes);
       setAdvertisements(adsRes);
       setJobPostings(jobPostingsRes);
+      setStagePostings(stagePostingsRes);
+      setStageApplications(stageApplicationsRes);
 
       // Admin-only data (dispatches, audit logs, client requests) is fetched
       // separately with the session token, and only when logged in as Admin.
@@ -462,7 +490,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const res = await fetch(`/api/job-postings/${postingId}/accept-offer`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ offerId })
+      body: JSON.stringify({ offerId, requesterId: currentUser?.id })
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -472,10 +500,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
 
   const updateJobStatus = async (jobId: string, status: JobStatus) => {
-    const res = await fetch('/api/jobs/update-status', {
+    const res = await adminFetch('/api/jobs/update-status', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jobId, status })
+      body: JSON.stringify({ jobId, status, requesterId: currentUser?.id })
     });
     if (res.ok) {
       await syncDatabase(true);
@@ -490,6 +518,64 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
     if (res.ok) {
       await syncDatabase(true);
+    }
+  };
+
+  const initiateMomoPayment = async (jobId: string, phone: string) => {
+    try {
+      const res = await fetch('/api/payments/momo/request-to-pay', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId, phone })
+      });
+      const data = await res.json();
+      if (!res.ok) return { success: false, error: data.error, simulation: data.simulation };
+      return { success: true, referenceId: data.referenceId };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  };
+
+  const checkMomoPaymentStatus = async (jobId: string) => {
+    try {
+      const res = await fetch(`/api/payments/momo/status/${jobId}`);
+      const data = await res.json();
+      if (!res.ok) return { success: false, error: data.error };
+      if (data.status === 'SUCCESSFUL') await syncDatabase(true);
+      return { success: true, status: data.status };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  };
+
+  const initiatePaypalPayment = async (jobId: string) => {
+    try {
+      const res = await fetch('/api/payments/paypal/create-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId })
+      });
+      const data = await res.json();
+      if (!res.ok) return { success: false, error: data.error, simulation: data.simulation };
+      return { success: true, orderId: data.orderId, approveUrl: data.approveUrl };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  };
+
+  const capturePaypalPayment = async (jobId: string, orderId: string) => {
+    try {
+      const res = await fetch('/api/payments/paypal/capture-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId, orderId })
+      });
+      const data = await res.json();
+      if (!res.ok) return { success: false, error: data.error };
+      if (data.status === 'SUCCESSFUL') await syncDatabase(true);
+      return { success: true, status: data.status };
+    } catch (err: any) {
+      return { success: false, error: err.message };
     }
   };
 
@@ -538,6 +624,77 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const addStagePostingByAdmin = async (fields: Omit<StagePosting, 'id' | 'isOpen' | 'createdAt'>) => {
+    const res = await adminFetch('/api/admin/stage/postings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fields)
+    });
+    if (res.ok) {
+      await syncDatabase(true);
+    }
+  };
+
+  const deleteStagePostingByAdmin = async (postingId: string) => {
+    const res = await adminFetch(`/api/admin/stage/postings/${postingId}`, { method: 'DELETE' });
+    if (res.ok) {
+      await syncDatabase(true);
+    }
+  };
+
+  const submitStageApplication = async (fields: { studentName: string; studentPhone: string; school: string; fieldOfStudy: string; postingId: string | null; postingTitle: string; motivation: string; }): Promise<StageApplication> => {
+    const res = await fetch('/api/stage/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        studentId: currentUser?.id || 'guest',
+        ...fields
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Application failed.');
+    await syncDatabase(true);
+    return data.application as StageApplication;
+  };
+
+  const initiateStagePayment = async (applicationId: string, phone: string) => {
+    try {
+      const res = await fetch('/api/momo/stage/request-to-pay', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ applicationId, phone })
+      });
+      const data = await res.json();
+      if (!res.ok) return { success: false, error: data.error };
+      return { success: true, referenceId: data.referenceId };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  };
+
+  const checkStagePaymentStatus = async (referenceId: string) => {
+    try {
+      const res = await fetch(`/api/momo/stage/status/${referenceId}`);
+      const data = await res.json();
+      if (!res.ok) return { success: false, error: data.error };
+      if (data.status === 'SUCCESSFUL') await syncDatabase(true);
+      return { success: true, status: data.status };
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  };
+
+  const updateStageApplicationStatus = async (applicationId: string, status: 'placed' | 'rejected') => {
+    const res = await adminFetch(`/api/admin/stage/applications/${applicationId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status })
+    });
+    if (res.ok) {
+      await syncDatabase(true);
+    }
+  };
+
   const replyQuoteByAdmin = async (quoteId: string, price: number) => {
     const res = await adminFetch('/api/admin/reply-quote', {
       method: 'POST',
@@ -548,7 +705,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       await syncDatabase(true);
     }
   };
-
+const deleteQuoteByAdmin = async (quoteId: string) => {
+    const res = await adminFetch(`/api/quotes/${quoteId}`, { method: 'DELETE' });
+    if (res.ok) {
+      await syncDatabase(true);
+    }
+  };
   const approveQuoteByClient = async (quoteId: string) => {
     const res = await fetch('/api/quotes/approve', {
       method: 'POST',
@@ -616,7 +778,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const res = await fetch(`/api/users/${userId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(fields)
+      body: JSON.stringify({ ...fields, requesterId: currentUser?.id })
     });
     if (res.ok) {
       await syncDatabase(true);
@@ -862,6 +1024,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const deleteJobByAdmin = async (jobId: string) => {
+    const res = await adminFetch(`/api/jobs/${jobId}`, { method: 'DELETE' });
+    if (res.ok) {
+      await syncDatabase(true);
+    }
+  };
+
   const clearDispatches = async () => {
     const res = await adminFetch('/api/dispatches/clear', { method: 'POST' });
     if (res.ok) {
@@ -916,6 +1085,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const deleteClientRequest = async (id: string) => {
+    try {
+      const res = await adminFetch(`/api/client-requests/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        await syncDatabase(true);
+      }
+    } catch (err) {
+      console.error('Failed to delete client request:', err);
+    }
+  };
+
   return (
     <AppContext.Provider value={{
       currentUser,
@@ -931,6 +1111,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       homepage,
       projects,
       clientRequests,
+      stagePostings,
+      stageApplications,
       isLoading,
       isAuthOpen,
       setIsAuthOpen,
@@ -952,9 +1134,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       updateJobStatus,
       addProgressUpdate,
       submitPaymentReceipt,
+      initiateMomoPayment,
+      checkMomoPaymentStatus,
+      initiatePaypalPayment,
+      capturePaypalPayment,
       submitReview,
       addQuoteRequest,
+      addStagePostingByAdmin,
+      deleteStagePostingByAdmin,
+      submitStageApplication,
+      initiateStagePayment,
+      checkStagePaymentStatus,
+      updateStageApplicationStatus,
       replyQuoteByAdmin,
+      deleteQuoteByAdmin,
       approveQuoteByClient,
       sendMessage,
       addConsultancy,
@@ -968,10 +1161,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       addProjectByAdmin,
       updateProjectByAdmin,
       deleteProjectByAdmin,
+      deleteJobByAdmin,
       clearDispatches,
       askAiFeasibility,
       addClientRequest,
       updateClientRequest,
+      deleteClientRequest,
       syncDatabase,
       settings,
       updateSettings,
